@@ -28,12 +28,12 @@
   </div>
   <b>Kontroller (AR içinde)</b><br>
   <b>Kumandayla:</b><br>
-  &bull; Thumbstick ileri/geri = model yavaşça ilk haline döner (basılı tuttukça)<br>
+  &bull; Thumbstick ileri/geri = zoom (ileri = yakınlaş, geri = uzaklaş)<br>
   &bull; Thumbstick sağ/sol = gözlemci modelin etrafında sağa/sola gider<br>
   &bull; Thumbstick'e bas = modeli anında sıfırla<br>
-  &bull; Tetik (basılı tut) = modeli fare gibi sürükleyerek çevir (kumandayla nişan alıp sağa/sola/yukarı/aşağı kaydır)<br>
+  &bull; Tetik (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
   &bull; Grip (basılı tut) = modeli her eksende taşı<br>
-  &bull; B / Y = zoom in, A / X = zoom out<br>
+  &bull; A veya B (sol kumandada X veya Y) basılı tut = modelin yatay dönüşü yavaşça sıfırlanır<br>
   <b>Elle (hand tracking, pinch = baş + işaret parmağı):</b><br>
   &bull; Sağ el pinch (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
   &bull; Sol el pinch (basılı tut) = modeli taşı<br>
@@ -188,6 +188,11 @@ function isinAci(q, out) {
   fTmp.set(0, 0, -1).applyQuaternion(q);
   out.yaw = Math.atan2(fTmp.x, -fTmp.z);
   out.pitch = Math.asin(THREE.MathUtils.clamp(fTmp.y, -1, 1));
+}
+// quaternion'un dünya Y ekseni etrafındaki (yatay) bileşeni; diğer dönüşler etkilenmez
+function yawAci(q) {
+  if (Math.hypot(q.y, q.w) < 1e-4) return null;
+  return 2 * Math.atan2(q.y, q.w);
 }
 const aciA = { yaw: 0, pitch: 0 }, aciB = { yaw: 0, pitch: 0 };
 const acifark = (a, b) => THREE.MathUtils.euclideanModulo(a - b + Math.PI, 2 * Math.PI) - Math.PI;
@@ -431,20 +436,18 @@ renderer.setAnimationLoop((t, frame) => {
       if (!gp) return;
       const x = gp.axes[2] || 0, y = gp.axes[3] || 0;
       // ileri = gözlemci yukarı çıkar (model üstünü gösterir), sağ = gözlemci sağa gider
-      if (Math.abs(y) > 0.15) {           // ileri/geri: ilk haline doğru yavaşça
-        const a = Math.min(1, Math.abs(y) * 2.5 * dt);
-        pivot.quaternion.slerp(homeQ, a);
-        pivot.position.lerp(homePos, a);
-        pivot.scale.setScalar(pivot.scale.x + (homeScale - pivot.scale.x) * a);
-      }
+      if (Math.abs(y) > 0.15)             // ileri = zoom in, geri = zoom out
+        pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * Math.exp(-y * 1.5 * dt), 0.02, 30));
       if (Math.abs(x) > 0.15) pivot.rotateOnWorldAxis(YEKSEN, -x * 2.5 * dt);
       const basili = gp.buttons[3] && gp.buttons[3].pressed;   // thumbstick tıklaması
       if (basili && !btnPrev[src.handedness]) sifirla();
       btnPrev[src.handedness] = basili;
-      const zin = gp.buttons[5] && gp.buttons[5].pressed;    // B / Y
-      const zout = gp.buttons[4] && gp.buttons[4].pressed;   // A / X
-      if (zin !== zout)
-        pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * Math.exp((zin ? 1 : -1) * 1.0 * dt), 0.02, 30));
+      const ab = (gp.buttons[4] && gp.buttons[4].pressed) || (gp.buttons[5] && gp.buttons[5].pressed);
+      if (ab) {                           // A veya B: yalnızca yatay dönüş (yaw) sıfırlanır
+        const cur = yawAci(pivot.quaternion), hedef = yawAci(homeQ);
+        if (cur !== null && hedef !== null)
+          pivot.rotateOnWorldAxis(YEKSEN, acifark(hedef, cur) * Math.min(1, 2.5 * dt));
+      }
     });
   } else {
     controls.update();
