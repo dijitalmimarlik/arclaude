@@ -28,11 +28,10 @@
   </div>
   <b>Kontroller (AR içinde)</b><br>
   <b>Kumandayla:</b><br>
-  &bull; Thumbstick ileri/geri = zoom<br>
+  &bull; Thumbstick ileri/geri = gözlemci modelin etrafında yukarı/aşağı gider<br>
   &bull; Thumbstick sağ/sol = gözlemci modelin etrafında sağa/sola gider<br>
-  &bull; Tetik (basılı tut) = modeli her eksende çevir (kumandayı çevirdikçe model çevrilir)<br>
-  &bull; Alt tetik / Grip (basılı tut) = modeli her eksende taşı<br>
-  &bull; A / X = yere yerleştirme modu (halka + tetik)<br>
+  &bull; Tetik veya Grip (basılı tut) = modeli her eksende taşı<br>
+  &bull; B / Y = zoom in, A / X = zoom out<br>
   <b>Elle (hand tracking, pinch = baş + işaret parmağı):</b><br>
   &bull; Sağ el pinch (basılı tut) = modeli çevir<br>
   &bull; Sol el pinch (basılı tut) = modeli taşı<br>
@@ -178,6 +177,8 @@ let d0 = 1, s0 = 1;
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
 const pNow = new THREE.Vector3(), qNow = new THREE.Quaternion(), qDelta = new THREE.Quaternion(), qInv = new THREE.Quaternion();
 const YEKSEN = new THREE.Vector3(0, 1, 0);
+const sagEksen = new THREE.Vector3(1, 0, 0), qView = new THREE.Quaternion();
+let sonT = 0;
 
 function lazerYap() {
   const g = new THREE.Group();
@@ -212,15 +213,20 @@ const controllers = [0, 1].map(i => {
   const baslatEylem = tur => {
     if (c.userData.isHand) return;
     if (!placed) { zemineYerlestir(); return; }
+    c.userData.say = (c.userData.say || 0) + 1;
     c.updateMatrixWorld(true);
     c.getWorldQuaternion(c.userData.prevQ);
     c.getWorldPosition(c.userData.prevP);
     c.userData[tur] = true;
     laserRenk(c);
   };
-  const bitirEylem = tur => { c.userData[tur] = false; laserRenk(c); };
-  c.addEventListener('selectstart', () => baslatEylem('rot'));
-  c.addEventListener('selectend', () => bitirEylem('rot'));
+  const bitirEylem = tur => {
+    c.userData.say = Math.max(0, (c.userData.say || 0) - 1);
+    if (c.userData.say === 0) c.userData[tur] = false;
+    laserRenk(c);
+  };
+  c.addEventListener('selectstart', () => baslatEylem('mov'));
+  c.addEventListener('selectend', () => bitirEylem('mov'));
   c.addEventListener('squeezestart', () => baslatEylem('mov'));
   c.addEventListener('squeezeend', () => bitirEylem('mov'));
   return c;
@@ -340,7 +346,7 @@ function baslangicYerlestir(frame) {
 
 let hitSource = null, hitRequested = false;
 renderer.xr.addEventListener('sessionend', () => {
-  tutucular.forEach(c => { c.userData.pinch = c.userData.rot = c.userData.mov = false; laserRenk(c); });
+  tutucular.forEach(c => { c.userData.pinch = c.userData.rot = c.userData.mov = false; c.userData.say = 0; laserRenk(c); });
   hitSource = null; hitRequested = false; placed = true;
   reticle.visible = false; panel.visible = false;
   pivot.position.set(0, 0, 0); pivot.quaternion.identity(); pivot.scale.setScalar(1);
@@ -389,22 +395,29 @@ renderer.setAnimationLoop((t, frame) => {
 
     elleriGuncelle();
 
-    session.inputSources.forEach((src, i) => {
+    // gözlemcinin bakış yönüne göre "sağ" ekseni (yatay düzlemde)
+    const vp = frame.getViewerPose(renderer.xr.getReferenceSpace());
+    if (vp) {
+      const o = vp.transform.orientation;
+      qView.set(o.x, o.y, o.z, o.w);
+      sagEksen.set(1, 0, 0).applyQuaternion(qView);
+      sagEksen.y = 0;
+      if (sagEksen.lengthSq() > 1e-4) sagEksen.normalize(); else sagEksen.set(1, 0, 0);
+    }
+    const dt = Math.min(0.1, (t - sonT) / 1000 || 0.016);
+    sonT = t;
+
+    session.inputSources.forEach(src => {
       const gp = src.gamepad;
       if (!gp) return;
       const x = gp.axes[2] || 0, y = gp.axes[3] || 0;
-      if (Math.abs(y) > 0.15) {           // ileri = yakınlaştır, geri = uzaklaştır
-        const k = THREE.MathUtils.clamp(1 - y * 0.02, 0.9, 1.1);
-        pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * k, 0.02, 30));
-      }
-      if (Math.abs(x) > 0.15)             // sağ = gözlemci sağa gider (model sola döner)
-        pivot.rotateOnWorldAxis(YEKSEN, -x * 0.04);
-      const a = gp.buttons[4] && gp.buttons[4].pressed;
-      if (a && !btnPrev[i]) {   // A / X: yere yerleştirme modu
-              tutucular.forEach(c => { c.userData.pinch = c.userData.rot = c.userData.mov = false; laserRenk(c); });
-        placed = false;
-      }
-      btnPrev[i] = a;
+      // ileri = gözlemci yukarı çıkar (model üstünü gösterir), sağ = gözlemci sağa gider
+      if (Math.abs(y) > 0.15) pivot.rotateOnWorldAxis(sagEksen, -y * 2.5 * dt);
+      if (Math.abs(x) > 0.15) pivot.rotateOnWorldAxis(YEKSEN, -x * 2.5 * dt);
+      const zin = gp.buttons[5] && gp.buttons[5].pressed;    // B / Y
+      const zout = gp.buttons[4] && gp.buttons[4].pressed;   // A / X
+      if (zin !== zout)
+        pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * Math.exp((zin ? 1 : -1) * 1.0 * dt), 0.02, 30));
     });
   } else {
     controls.update();
