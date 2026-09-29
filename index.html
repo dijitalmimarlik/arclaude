@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Quest 3 AR - Serbest Model Kontrolü</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#222;font-family:system-ui,sans-serif}
+  html,body{margin:0;height:100%;overflow:hidden;background:#c4c8ce;font-family:system-ui,sans-serif}
   #bilgi{position:absolute;top:12px;left:12px;right:12px;max-width:520px;color:#fff;font-size:14px;
     background:rgba(0,0,0,.6);padding:10px 14px;border-radius:8px;line-height:1.5}
   #yuk{margin-bottom:8px}
@@ -28,9 +28,11 @@
   </div>
   <b>Kontroller (AR içinde)</b><br>
   <b>Kumandayla:</b><br>
-  &bull; Thumbstick ileri/geri = gözlemci modelin etrafında yukarı/aşağı gider<br>
+  &bull; Thumbstick ileri/geri = model yavaşça ilk haline döner (basılı tuttukça)<br>
   &bull; Thumbstick sağ/sol = gözlemci modelin etrafında sağa/sola gider<br>
-  &bull; Tetik veya Grip (basılı tut) = modeli her eksende taşı<br>
+  &bull; Thumbstick'e bas = modeli anında sıfırla<br>
+  &bull; Tetik (basılı tut) = modeli her eksende çevir<br>
+  &bull; Grip (basılı tut) = modeli her eksende taşı<br>
   &bull; B / Y = zoom in, A / X = zoom out<br>
   <b>Elle (hand tracking, pinch = baş + işaret parmağı):</b><br>
   &bull; Sağ el pinch (basılı tut) = modeli çevir<br>
@@ -179,6 +181,13 @@ const pNow = new THREE.Vector3(), qNow = new THREE.Quaternion(), qDelta = new TH
 const YEKSEN = new THREE.Vector3(0, 1, 0);
 const sagEksen = new THREE.Vector3(1, 0, 0), qView = new THREE.Quaternion();
 let sonT = 0;
+const homePos = new THREE.Vector3(), homeQ = new THREE.Quaternion();
+let homeScale = 1;
+function sifirla() {
+  pivot.position.copy(homePos);
+  pivot.quaternion.copy(homeQ);
+  pivot.scale.setScalar(homeScale);
+}
 
 function lazerYap() {
   const g = new THREE.Group();
@@ -213,21 +222,16 @@ const controllers = [0, 1].map(i => {
   const baslatEylem = tur => {
     if (c.userData.isHand) return;
     if (!placed) { zemineYerlestir(); return; }
-    c.userData.say = (c.userData.say || 0) + 1;
     c.updateMatrixWorld(true);
     c.getWorldQuaternion(c.userData.prevQ);
     c.getWorldPosition(c.userData.prevP);
     c.userData[tur] = true;
     laserRenk(c);
   };
-  const bitirEylem = tur => {
-    c.userData.say = Math.max(0, (c.userData.say || 0) - 1);
-    if (c.userData.say === 0) c.userData[tur] = false;
-    laserRenk(c);
-  };
-  c.addEventListener('selectstart', () => baslatEylem('mov'));
-  c.addEventListener('selectend', () => bitirEylem('mov'));
-  c.addEventListener('squeezestart', () => baslatEylem('mov'));
+  const bitirEylem = tur => { c.userData[tur] = false; laserRenk(c); };
+  c.addEventListener('selectstart', () => baslatEylem('rot'));   // tetik: çevir
+  c.addEventListener('selectend', () => bitirEylem('rot'));
+  c.addEventListener('squeezestart', () => baslatEylem('mov'));  // grip: taşı
   c.addEventListener('squeezeend', () => bitirEylem('mov'));
   return c;
 });
@@ -340,6 +344,7 @@ function baslangicYerlestir(frame) {
   panel.position.y = p.y + 0.15;
   panel.lookAt(p.x, panel.position.y, p.z);
   panel.visible = !status.done || status.error;
+  homePos.copy(pivot.position); homeQ.copy(pivot.quaternion); homeScale = 1;
   placed = true;
   return true;
 }
@@ -412,8 +417,16 @@ renderer.setAnimationLoop((t, frame) => {
       if (!gp) return;
       const x = gp.axes[2] || 0, y = gp.axes[3] || 0;
       // ileri = gözlemci yukarı çıkar (model üstünü gösterir), sağ = gözlemci sağa gider
-      if (Math.abs(y) > 0.15) pivot.rotateOnWorldAxis(sagEksen, -y * 2.5 * dt);
+      if (Math.abs(y) > 0.15) {           // ileri/geri: ilk haline doğru yavaşça
+        const a = Math.min(1, Math.abs(y) * 2.5 * dt);
+        pivot.quaternion.slerp(homeQ, a);
+        pivot.position.lerp(homePos, a);
+        pivot.scale.setScalar(pivot.scale.x + (homeScale - pivot.scale.x) * a);
+      }
       if (Math.abs(x) > 0.15) pivot.rotateOnWorldAxis(YEKSEN, -x * 2.5 * dt);
+      const basili = gp.buttons[3] && gp.buttons[3].pressed;   // thumbstick tıklaması
+      if (basili && !btnPrev[src.handedness]) sifirla();
+      btnPrev[src.handedness] = basili;
       const zin = gp.buttons[5] && gp.buttons[5].pressed;    // B / Y
       const zout = gp.buttons[4] && gp.buttons[4].pressed;   // A / X
       if (zin !== zout)
