@@ -31,11 +31,11 @@
   &bull; Thumbstick ileri/geri = model yavaşça ilk haline döner (basılı tuttukça)<br>
   &bull; Thumbstick sağ/sol = gözlemci modelin etrafında sağa/sola gider<br>
   &bull; Thumbstick'e bas = modeli anında sıfırla<br>
-  &bull; Tetik (basılı tut) = modeli her eksende çevir<br>
+  &bull; Tetik (basılı tut) = modeli fare gibi sürükleyerek çevir (kumandayla nişan alıp sağa/sola/yukarı/aşağı kaydır)<br>
   &bull; Grip (basılı tut) = modeli her eksende taşı<br>
   &bull; B / Y = zoom in, A / X = zoom out<br>
   <b>Elle (hand tracking, pinch = baş + işaret parmağı):</b><br>
-  &bull; Sağ el pinch (basılı tut) = modeli çevir<br>
+  &bull; Sağ el pinch (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
   &bull; Sol el pinch (basılı tut) = modeli taşı<br>
   &bull; İki el birden pinch = zoom (elleri aç/kapat)
 </div>
@@ -181,6 +181,16 @@ const pNow = new THREE.Vector3(), qNow = new THREE.Quaternion(), qDelta = new TH
 const YEKSEN = new THREE.Vector3(0, 1, 0);
 const sagEksen = new THREE.Vector3(1, 0, 0), qView = new THREE.Quaternion();
 let sonT = 0;
+const ROT_GAIN = 3;        // kumanda: ışın açısı -> model dönüşü çarpanı
+const HAND_ROT_GAIN = 8;   // sağ el: metre başına radyan
+const fTmp = new THREE.Vector3();
+function isinAci(q, out) {
+  fTmp.set(0, 0, -1).applyQuaternion(q);
+  out.yaw = Math.atan2(fTmp.x, -fTmp.z);
+  out.pitch = Math.asin(THREE.MathUtils.clamp(fTmp.y, -1, 1));
+}
+const aciA = { yaw: 0, pitch: 0 }, aciB = { yaw: 0, pitch: 0 };
+const acifark = (a, b) => THREE.MathUtils.euclideanModulo(a - b + Math.PI, 2 * Math.PI) - Math.PI;
 const homePos = new THREE.Vector3(), homeQ = new THREE.Quaternion();
 let homeScale = 1;
 function sifirla() {
@@ -309,8 +319,9 @@ function elleriGuncelle() {
     aktif.forEach(h => {
       const u = h.userData;
       if (hand_sag(h)) {                    // sağ el: döndür
-        qDelta.copy(h.quaternion).multiply(qInv.copy(u.prevQ).invert());
-        pivot.quaternion.premultiply(qDelta);
+        tmpA.copy(h.position).sub(u.prevP);
+        pivot.rotateOnWorldAxis(YEKSEN, tmpA.dot(sagEksen) * HAND_ROT_GAIN);
+        pivot.rotateOnWorldAxis(sagEksen, -tmpA.y * HAND_ROT_GAIN);
       } else {                              // sol el: taşı
         pivot.position.add(tmpA.copy(h.position).sub(u.prevP).multiplyScalar(MOVE_GAIN));
       }
@@ -388,8 +399,11 @@ renderer.setAnimationLoop((t, frame) => {
       c.getWorldPosition(pNow);
       if (pivot.parent === scene) {
         if (c.userData.rot) {   // tetik: kumanda dönüşünü modele uygula (trackball)
-          qDelta.copy(qNow).multiply(qInv.copy(c.userData.prevQ).invert());
-          pivot.quaternion.premultiply(qDelta.invert());   // eksenler ters
+          isinAci(qNow, aciA);
+          isinAci(c.userData.prevQ, aciB);
+          const dYaw = acifark(aciA.yaw, aciB.yaw), dPitch = aciA.pitch - aciB.pitch;
+          pivot.rotateOnWorldAxis(YEKSEN, dYaw * ROT_GAIN);          // sağa sürükle = model sağa döner
+          pivot.rotateOnWorldAxis(sagEksen, -dPitch * ROT_GAIN);     // yukarı sürükle = model yukarı döner
         }
         if (c.userData.mov)     // grip: kumanda konum farkını modele uygula
           pivot.position.add(tmpA.copy(pNow).sub(c.userData.prevP).multiplyScalar(MOVE_GAIN));
