@@ -27,9 +27,14 @@
     <div id="cubuk"><div id="dolu"></div></div>
   </div>
   <b>Kontroller (AR içinde)</b><br>
-  AR başlayınca model önünüzde belirir. <b>Trigger veya Grip'i basılı tutun</b>: model elinize yapışır, her yöne taşır/döndürürsünüz.
-  İki elle tutup açın/kapatın: ölçekleme. Thumbstick: ileri/geri boyut, sağ/sol dönüş.
-  <b>A / X</b>: yere yeniden yerleştirme modu (halka + Trigger).
+  <b>Kumandayla:</b><br>
+  &bull; Thumbstick ileri/geri = zoom<br>
+  &bull; Thumbstick sağ/sol = gözlemci modelin etrafında sağa/sola gider<br>
+  &bull; Tetik (basılı tut) = modeli her eksende çevir (kumandayı çevirdikçe model çevrilir)<br>
+  &bull; Alt tetik / Grip (basılı tut) = modeli her eksende taşı<br>
+  &bull; A / X = yere yerleştirme modu (halka + tetik)<br>
+  <b>Elle (hand tracking):</b> Baş ve işaret parmağını birleştir (pinch) ve tut = modeli tut, taşı, döndür.
+  İki elle pinch yapıp aç/kapat = zoom.
 </div>
 
 <script type="module">
@@ -165,54 +170,149 @@ reticle.matrixAutoUpdate = false;
 reticle.visible = false;
 scene.add(reticle);
 
-// ---------- Kontrolcüler ----------
-let placed = true;      // false iken halka aranır, Trigger ile yere konur
+// ---------- Tutucular: kumandalar + el pinch'leri ----------
+let placed = true;      // false iken halka aranır, Trigger/pinch ile yere konur
 let holder = null;
 let d0 = 1, s0 = 1;
+const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
+const pNow = new THREE.Vector3(), qNow = new THREE.Quaternion(), qDelta = new THREE.Quaternion(), qInv = new THREE.Quaternion();
+const YEKSEN = new THREE.Vector3(0, 1, 0);
+
+function lazerYap() {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
+  const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 1.5, 8), mat);
+  cyl.rotation.x = Math.PI / 2;
+  cyl.position.z = -0.75;
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.01, 12, 12), mat);
+  tip.position.z = -1.5;
+  g.add(cyl, tip);
+  g.userData.mat = mat;
+  return g;
+}
 
 const controllers = [0, 1].map(i => {
   const c = renderer.xr.getController(i);
   c.userData.grabbing = false;
+  c.userData.isHand = false;
   scene.add(c);
-  const start = () => {
-    if (!placed) {
-      if (reticle.visible) {
-        pivot.position.setFromMatrixPosition(reticle.matrix);
-        pivot.position.y += 0.02;
-        pivot.quaternion.identity();
-        placed = true;
-      }
-      return;
+  c.addEventListener('connected', e => {
+    c.userData.isHand = !!e.data.hand;
+    if (!c.userData.isHand && !c.userData.laser) {
+      c.userData.laser = lazerYap();
+      c.add(c.userData.laser);
     }
-    grabStart(c);
+    if (c.userData.laser) c.userData.laser.visible = !c.userData.isHand;
+  });
+  c.userData.rot = false;   // tetik: döndür
+  c.userData.mov = false;   // grip: taşı
+  c.userData.prevQ = new THREE.Quaternion();
+  c.userData.prevP = new THREE.Vector3();
+  const baslatEylem = tur => {
+    if (c.userData.isHand) return;
+    if (!placed) { zemineYerlestir(); return; }
+    c.updateMatrixWorld(true);
+    c.getWorldQuaternion(c.userData.prevQ);
+    c.getWorldPosition(c.userData.prevP);
+    c.userData[tur] = true;
+    laserRenk(c);
   };
-  c.addEventListener('selectstart', start);
-  c.addEventListener('squeezestart', start);
-  c.addEventListener('selectend', () => grabEnd(c));
-  c.addEventListener('squeezeend', () => grabEnd(c));
+  const bitirEylem = tur => { c.userData[tur] = false; laserRenk(c); };
+  c.addEventListener('selectstart', () => baslatEylem('rot'));
+  c.addEventListener('selectend', () => bitirEylem('rot'));
+  c.addEventListener('squeezestart', () => baslatEylem('mov'));
+  c.addEventListener('squeezeend', () => bitirEylem('mov'));
   return c;
 });
-const grabbers = () => controllers.filter(c => c.userData.grabbing);
 
-function grabStart(c) {
-  if (c.userData.grabbing) return;
-  c.userData.grabbing = true;
-  const g = grabbers();
-  if (g.length === 1) { c.attach(pivot); holder = c; }
-  else if (g.length === 2) {
-    d0 = Math.max(0.01, controllers[0].position.distanceTo(controllers[1].position));
+// El takibi: pinch algılama kendi kodumuzla yapılır
+const hands = [0, 1].map(i => {
+  const hand = renderer.xr.getHand(i);
+  hand.userData.active = false;
+  hand.addEventListener('connected', () => hand.userData.active = true);
+  hand.addEventListener('disconnected', () => hand.userData.active = false);
+  scene.add(hand);
+
+  const proxy = new THREE.Object3D();      // pinch noktası
+  proxy.userData.grabbing = false;
+  proxy.userData.hand = hand;
+  proxy.userData.gosterge = new THREE.Mesh(
+    new THREE.SphereGeometry(0.012, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  );
+  proxy.add(proxy.userData.gosterge);
+  proxy.visible = false;
+  scene.add(proxy);
+  return proxy;
+});
+
+const tutucular = [...controllers, ...hands];
+const grabbers = () => tutucular.filter(c => c.userData.grabbing);
+
+function zemineYerlestir() {
+  if (!reticle.visible) return;
+  pivot.position.setFromMatrixPosition(reticle.matrix);
+  pivot.position.y += 0.02;
+  pivot.quaternion.identity();
+  placed = true;
+}
+
+function baslat(g) {           // yalnızca eller (pinch) için
+  if (!placed) { zemineYerlestir(); return; }
+  grabStart(g);
+}
+
+function grabStart(g) {
+  if (g.userData.grabbing) return;
+  g.userData.grabbing = true;
+  const list = grabbers();
+  if (list.length === 1) {
+    g.updateMatrixWorld(true);
+    g.attach(pivot);
+    holder = g;
+  } else if (list.length === 2) {
+    d0 = Math.max(0.01, list[0].getWorldPosition(tmpA).distanceTo(list[1].getWorldPosition(tmpB)));
     s0 = pivot.scale.x;
   }
+  laserRenk(g);
 }
-function grabEnd(c) {
-  if (!c.userData.grabbing) return;
-  c.userData.grabbing = false;
-  if (holder === c) {
+function grabEnd(g) {
+  if (!g.userData.grabbing) return;
+  g.userData.grabbing = false;
+  laserRenk(g);
+  if (holder === g) {
     scene.attach(pivot);
     holder = null;
     const kalan = grabbers()[0];
-    if (kalan) { kalan.attach(pivot); holder = kalan; }
+    if (kalan) { kalan.updateMatrixWorld(true); kalan.attach(pivot); holder = kalan; }
   }
+}
+function laserRenk(g) {
+  const u = g.userData;
+  if (u.laser) u.laser.userData.mat.color.set(u.rot ? 0xffa726 : u.mov ? 0x4cff6a : 0xffffff);
+  if (u.gosterge) u.gosterge.material.color.set(u.grabbing ? 0x4cff6a : 0xffffff);
+}
+
+function elleriGuncelle() {
+  hands.forEach(proxy => {
+    const hand = proxy.userData.hand;
+    const th = hand.joints && hand.joints['thumb-tip'];
+    const ix = hand.joints && hand.joints['index-finger-tip'];
+    const wr = hand.joints && hand.joints['wrist'];
+    const ok = hand.userData.active && th && ix && wr && th.visible && ix.visible && wr.visible;
+    if (!ok) {
+      proxy.visible = false;
+      if (proxy.userData.grabbing) grabEnd(proxy);
+      return;
+    }
+    proxy.visible = true;
+    proxy.position.copy(th.position).add(ix.position).multiplyScalar(0.5);
+    proxy.quaternion.copy(wr.quaternion);
+    proxy.updateMatrixWorld(true);
+    const d = th.position.distanceTo(ix.position);
+    if (!proxy.userData.grabbing && d < 0.025) baslat(proxy);
+    else if (proxy.userData.grabbing && d > 0.045) grabEnd(proxy);
+  });
 }
 
 // ---------- Oturum başı: modeli ve paneli kullanıcının önüne koy ----------
@@ -246,7 +346,7 @@ function baslangicYerlestir(frame) {
 let hitSource = null, hitRequested = false;
 renderer.xr.addEventListener('sessionend', () => {
   if (holder) grabEnd(holder);
-  controllers.forEach(c => c.userData.grabbing = false);
+  tutucular.forEach(c => { c.userData.grabbing = c.userData.rot = c.userData.mov = false; laserRenk(c); });
   hitSource = null; hitRequested = false; placed = true;
   reticle.visible = false; panel.visible = false;
   pivot.position.set(0, 0, 0); pivot.quaternion.identity(); pivot.scale.setScalar(1);
@@ -276,8 +376,28 @@ renderer.setAnimationLoop((t, frame) => {
       } else reticle.visible = false;
     } else reticle.visible = false;
 
-    if (grabbers().length === 2) {
-      const d = controllers[0].position.distanceTo(controllers[1].position);
+    elleriGuncelle();
+
+    controllers.forEach(c => {
+      if (c.userData.isHand || (!c.userData.rot && !c.userData.mov)) return;
+      c.updateMatrixWorld(true);
+      c.getWorldQuaternion(qNow);
+      c.getWorldPosition(pNow);
+      if (pivot.parent === scene) {
+        if (c.userData.rot) {   // tetik: kumanda dönüşünü modele uygula (trackball)
+          qDelta.copy(qNow).multiply(qInv.copy(c.userData.prevQ).invert());
+          pivot.quaternion.premultiply(qDelta);
+        }
+        if (c.userData.mov)     // grip: kumanda konum farkını modele uygula
+          pivot.position.add(tmpA.copy(pNow).sub(c.userData.prevP));
+      }
+      c.userData.prevQ.copy(qNow);
+      c.userData.prevP.copy(pNow);
+    });
+
+    const gl = grabbers();
+    if (gl.length === 2) {
+      const d = gl[0].getWorldPosition(tmpA).distanceTo(gl[1].getWorldPosition(tmpB));
       pivot.scale.setScalar(THREE.MathUtils.clamp(s0 * d / d0, 0.05, 20));
     }
 
@@ -285,13 +405,16 @@ renderer.setAnimationLoop((t, frame) => {
       const gp = src.gamepad;
       if (!gp) return;
       const x = gp.axes[2] || 0, y = gp.axes[3] || 0;
-      if (Math.abs(y) > 0.15 && grabbers().length < 2)
-        pivot.scale.multiplyScalar(THREE.MathUtils.clamp(1 - y * 0.02, 0.9, 1.1));
-      if (Math.abs(x) > 0.15) pivot.rotateY(-x * 0.04);
+      if (Math.abs(y) > 0.15) {           // ileri = yakınlaştır, geri = uzaklaştır
+        const k = THREE.MathUtils.clamp(1 - y * 0.02, 0.9, 1.1);
+        pivot.scale.setScalar(THREE.MathUtils.clamp(pivot.scale.x * k, 0.02, 30));
+      }
+      if (Math.abs(x) > 0.15)             // sağ = gözlemci sağa gider (model sola döner)
+        pivot.rotateOnWorldAxis(YEKSEN, -x * 0.04);
       const a = gp.buttons[4] && gp.buttons[4].pressed;
       if (a && !btnPrev[i]) {   // A / X: yere yerleştirme modu
         if (holder) grabEnd(holder);
-        controllers.forEach(c => c.userData.grabbing = false);
+        tutucular.forEach(c => { c.userData.grabbing = c.userData.rot = c.userData.mov = false; laserRenk(c); });
         placed = false;
       }
       btnPrev[i] = a;
