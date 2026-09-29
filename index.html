@@ -5,10 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Quest 3 AR - Serbest Model Kontrolü</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#111;font-family:system-ui,sans-serif}
-  #bilgi{position:absolute;top:12px;left:12px;right:12px;color:#fff;font-size:14px;
-    background:rgba(0,0,0,.55);padding:10px 14px;border-radius:8px;max-width:520px;line-height:1.5}
-  #hata{color:#ffb4b4;display:none}
+  html,body{margin:0;height:100%;overflow:hidden;background:#222;font-family:system-ui,sans-serif}
+  #bilgi{position:absolute;top:12px;left:12px;right:12px;max-width:520px;color:#fff;font-size:14px;
+    background:rgba(0,0,0,.6);padding:10px 14px;border-radius:8px;line-height:1.5}
+  #yuk{margin-bottom:8px}
+  #cubuk{height:10px;background:rgba(255,255,255,.25);border-radius:6px;overflow:hidden;margin-top:4px}
+  #dolu{height:100%;width:0;background:#4caf50;transition:width .2s}
+  #durum.hata{color:#ffb4b4;font-weight:bold}
 </style>
 <script type="importmap">
 { "imports": {
@@ -19,25 +22,70 @@
 </head>
 <body>
 <div id="bilgi">
+  <div id="yuk">
+    <span id="durum">Sayfa başlatılıyor...</span>
+    <div id="cubuk"><div id="dolu"></div></div>
+  </div>
   <b>Kontroller (AR içinde)</b><br>
-  1) Yere bakın, halka görününce <b>Trigger</b> ile modeli yerleştirin.<br>
-  2) <b>Trigger veya Grip'i basılı tutun</b>: model elinize yapışır, her yöne taşır/döndürürsünüz.<br>
-  3) <b>İki elle</b> aynı anda tutup açın/kapatın: ölçekleme.<br>
-  4) Thumbstick: ileri/geri = boyut, sağ/sol = Y ekseninde dönüş. <b>A / X</b> tuşu = yeniden yerleştir.<br>
-  Eller (hand tracking) açıksa pinch hareketi de çalışır.
-  <div id="hata">model.glb yüklenemedi, yerine demo küp gösteriliyor.</div>
+  AR başlayınca model önünüzde belirir. <b>Trigger veya Grip'i basılı tutun</b>: model elinize yapışır, her yöne taşır/döndürürsünüz.
+  İki elle tutup açın/kapatın: ölçekleme. Thumbstick: ileri/geri boyut, sağ/sol dönüş.
+  <b>A / X</b>: yere yeniden yerleştirme modu (halka + Trigger).
 </div>
 
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ARButton } from 'three/addons/webxr/ARButton.js';
 
 const MODEL_URL = 'model.glb';
-const HEDEF_BOYUT = 0.3; // metre: model başlangıçta en büyük kenarı bu kadar olur
+const HEDEF_BOYUT = 0.3; // metre
 
+const durumEl = document.getElementById('durum');
+const doluEl = document.getElementById('dolu');
+const cubukEl = document.getElementById('cubuk');
+
+// ---------- Durum (HTML + AR içi 3D panel) ----------
+const status = { text: 'Model yükleniyor...', pct: 0, error: false, done: false };
+
+const panelCanvas = document.createElement('canvas');
+panelCanvas.width = 1024; panelCanvas.height = 256;
+const pctx = panelCanvas.getContext('2d');
+const panelTex = new THREE.CanvasTexture(panelCanvas);
+const panel = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.6, 0.15),
+  new THREE.MeshBasicMaterial({ map: panelTex, transparent: true, depthTest: false })
+);
+panel.renderOrder = 999;
+panel.visible = false;
+
+function durumGuncelle(text, pct, opts = {}) {
+  Object.assign(status, { text, pct, ...opts });
+  durumEl.textContent = text;
+  durumEl.className = status.error ? 'hata' : '';
+  doluEl.style.width = (pct ?? 0) + '%';
+  doluEl.style.background = status.error ? '#e53935' : '#4caf50';
+  if (status.done && !status.error) cubukEl.style.display = 'none';
+
+  pctx.clearRect(0, 0, 1024, 256);
+  pctx.fillStyle = 'rgba(0,0,0,0.75)';
+  pctx.fillRect(0, 0, 1024, 256);
+  pctx.fillStyle = status.error ? '#ff8a80' : '#fff';
+  pctx.font = 'bold 44px sans-serif';
+  pctx.textAlign = 'center';
+  pctx.fillText(status.text, 512, 100, 960);
+  pctx.fillStyle = 'rgba(255,255,255,0.25)';
+  pctx.fillRect(112, 150, 800, 40);
+  pctx.fillStyle = status.error ? '#e53935' : '#4caf50';
+  pctx.fillRect(112, 150, 8 * (pct ?? 0), 40);
+  panelTex.needsUpdate = true;
+}
+durumGuncelle(status.text, 0);
+
+// ---------- Sahne ----------
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 50);
+camera.position.set(0, 0.2, 1.0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(devicePixelRatio);
@@ -46,43 +94,69 @@ renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 document.body.appendChild(renderer.domElement);
 
+const controls = new OrbitControls(camera, renderer.domElement); // AR dışı önizleme
+controls.enableDamping = true;
+
 document.body.appendChild(ARButton.createButton(renderer, {
   requiredFeatures: ['hit-test'],
   optionalFeatures: ['hand-tracking', 'local-floor']
 }));
 
-// Işık
 scene.add(new THREE.HemisphereLight(0xffffff, 0x666666, 1.6));
 const dir = new THREE.DirectionalLight(0xffffff, 1.5);
 dir.position.set(1, 3, 2);
 scene.add(dir);
+scene.add(panel);
 
 // pivot: model merkezinden döner ve ölçeklenir
 const pivot = new THREE.Group();
-pivot.visible = false;
 scene.add(pivot);
 
 function pivotaEkle(obj) {
   const box = new THREE.Box3().setFromObject(obj);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
-  const s = HEDEF_BOYUT / Math.max(size.x, size.y, size.z);
-  obj.position.sub(center);          // merkezi pivota getir
+  const s = HEDEF_BOYUT / Math.max(size.x, size.y, size.z, 1e-6);
+  obj.position.sub(center);
   const kap = new THREE.Group();
   kap.add(obj);
   kap.scale.setScalar(s);
   pivot.add(kap);
 }
 
-new GLTFLoader().load(MODEL_URL, g => pivotaEkle(g.scene), undefined, () => {
-  document.getElementById('hata').style.display = 'block';
+function demoKup() {
   pivotaEkle(new THREE.Mesh(
     new THREE.BoxGeometry(1, 1, 1),
     new THREE.MeshStandardMaterial({ color: 0x4caf50 })
   ));
-});
+}
 
-// Yerleştirme halkası
+// ---------- Model yükleme (ilerleme çubuğu ile) ----------
+new GLTFLoader().load(
+  MODEL_URL,
+  g => {
+    pivotaEkle(g.scene);
+    durumGuncelle('Model hazır ✓', 100, { done: true });
+    setTimeout(() => { if (!status.error) panel.visible = false; }, 3000);
+  },
+  e => {
+    if (e.lengthComputable && e.total > 0) {
+      const p = Math.round(e.loaded / e.total * 100);
+      durumGuncelle(`Model yükleniyor %${p}`, p);
+    } else {
+      // sunucu boyut bildirmiyorsa (sıkıştırma vb.) yalnızca indirilen miktar
+      durumGuncelle(`Model yükleniyor ${(e.loaded / 1048576).toFixed(1)} MB`, 50);
+    }
+  },
+  err => {
+    console.error(err);
+    demoKup();
+    durumGuncelle('model.glb yüklenemedi (dosya yok/yol yanlış?). Demo küp gösteriliyor.', 100,
+      { error: true, done: true });
+  }
+);
+
+// ---------- Yerleştirme halkası ----------
 const reticle = new THREE.Mesh(
   new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI / 2),
   new THREE.MeshBasicMaterial({ color: 0xffffff })
@@ -91,10 +165,11 @@ reticle.matrixAutoUpdate = false;
 reticle.visible = false;
 scene.add(reticle);
 
-// Kontrolcüler
-let placed = false;
+// ---------- Kontrolcüler ----------
+let placed = true;      // false iken halka aranır, Trigger ile yere konur
 let holder = null;
 let d0 = 1, s0 = 1;
+
 const controllers = [0, 1].map(i => {
   const c = renderer.xr.getController(i);
   c.userData.grabbing = false;
@@ -103,8 +178,8 @@ const controllers = [0, 1].map(i => {
     if (!placed) {
       if (reticle.visible) {
         pivot.position.setFromMatrixPosition(reticle.matrix);
+        pivot.position.y += 0.02;
         pivot.quaternion.identity();
-        pivot.visible = true;
         placed = true;
       }
       return;
@@ -117,22 +192,18 @@ const controllers = [0, 1].map(i => {
   c.addEventListener('squeezeend', () => grabEnd(c));
   return c;
 });
-
 const grabbers = () => controllers.filter(c => c.userData.grabbing);
 
 function grabStart(c) {
   if (c.userData.grabbing) return;
   c.userData.grabbing = true;
   const g = grabbers();
-  if (g.length === 1) {
-    c.attach(pivot);
-    holder = c;
-  } else if (g.length === 2) {
+  if (g.length === 1) { c.attach(pivot); holder = c; }
+  else if (g.length === 2) {
     d0 = Math.max(0.01, controllers[0].position.distanceTo(controllers[1].position));
     s0 = pivot.scale.x;
   }
 }
-
 function grabEnd(c) {
   if (!c.userData.grabbing) return;
   c.userData.grabbing = false;
@@ -144,61 +215,92 @@ function grabEnd(c) {
   }
 }
 
-// Hit-test
+// ---------- Oturum başı: modeli ve paneli kullanıcının önüne koy ----------
+let needInit = false;
+renderer.xr.addEventListener('sessionstart', () => { needInit = true; });
+
+function baslangicYerlestir(frame) {
+  const pose = frame.getViewerPose(renderer.xr.getReferenceSpace());
+  if (!pose) return false;
+  const t = pose.transform;
+  const p = new THREE.Vector3(t.position.x, t.position.y, t.position.z);
+  const q = new THREE.Quaternion(t.orientation.x, t.orientation.y, t.orientation.z, t.orientation.w);
+  const f = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+  f.y = 0;
+  if (f.lengthSq() < 1e-4) f.set(0, 0, -1);
+  f.normalize();
+
+  pivot.scale.setScalar(1);
+  pivot.quaternion.identity();
+  pivot.position.copy(p).addScaledVector(f, 1.0);
+  pivot.position.y = p.y - 0.35;
+
+  panel.position.copy(p).addScaledVector(f, 0.9);
+  panel.position.y = p.y + 0.15;
+  panel.lookAt(p.x, panel.position.y, p.z);
+  panel.visible = !status.done || status.error;
+  placed = true;
+  return true;
+}
+
 let hitSource = null, hitRequested = false;
 renderer.xr.addEventListener('sessionend', () => {
-  hitSource = null; hitRequested = false; placed = false;
-  pivot.visible = false; reticle.visible = false;
+  if (holder) grabEnd(holder);
+  controllers.forEach(c => c.userData.grabbing = false);
+  hitSource = null; hitRequested = false; placed = true;
+  reticle.visible = false; panel.visible = false;
+  pivot.position.set(0, 0, 0); pivot.quaternion.identity(); pivot.scale.setScalar(1);
 });
 
+// ---------- Döngü ----------
 const btnPrev = {};
-function render(t, frame) {
+renderer.setAnimationLoop((t, frame) => {
   if (frame) {
     const session = renderer.xr.getSession();
 
+    if (needInit && baslangicYerlestir(frame)) needInit = false;
+
     if (!hitRequested) {
       hitRequested = true;
-      session.requestReferenceSpace('viewer').then(space =>
-        session.requestHitTestSource({ space }).then(src => hitSource = src));
+      session.requestReferenceSpace('viewer')
+        .then(space => session.requestHitTestSource({ space }))
+        .then(src => hitSource = src)
+        .catch(e => console.warn('hit-test yok:', e));
     }
 
     if (hitSource && !placed) {
       const hits = frame.getHitTestResults(hitSource);
       if (hits.length) {
-        const pose = hits[0].getPose(renderer.xr.getReferenceSpace());
         reticle.visible = true;
-        reticle.matrix.fromArray(pose.transform.matrix);
+        reticle.matrix.fromArray(hits[0].getPose(renderer.xr.getReferenceSpace()).transform.matrix);
       } else reticle.visible = false;
     } else reticle.visible = false;
 
-    // İki elle ölçekleme
     if (grabbers().length === 2) {
       const d = controllers[0].position.distanceTo(controllers[1].position);
       pivot.scale.setScalar(THREE.MathUtils.clamp(s0 * d / d0, 0.05, 20));
     }
 
-    // Thumbstick + tuşlar
     session.inputSources.forEach((src, i) => {
       const gp = src.gamepad;
-      if (!gp || !placed) return;
+      if (!gp) return;
       const x = gp.axes[2] || 0, y = gp.axes[3] || 0;
       if (Math.abs(y) > 0.15 && grabbers().length < 2)
         pivot.scale.multiplyScalar(THREE.MathUtils.clamp(1 - y * 0.02, 0.9, 1.1));
-      if (Math.abs(x) > 0.15)
-        pivot.rotateY(-x * 0.04);
+      if (Math.abs(x) > 0.15) pivot.rotateY(-x * 0.04);
       const a = gp.buttons[4] && gp.buttons[4].pressed;
-      if (a && !btnPrev[i]) {           // A / X: yeniden yerleştir
+      if (a && !btnPrev[i]) {   // A / X: yere yerleştirme modu
         if (holder) grabEnd(holder);
         controllers.forEach(c => c.userData.grabbing = false);
         placed = false;
-        pivot.visible = false;
       }
       btnPrev[i] = a;
     });
+  } else {
+    controls.update();
   }
   renderer.render(scene, camera);
-}
-renderer.setAnimationLoop(render);
+});
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
