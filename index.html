@@ -33,7 +33,7 @@
   &bull; Thumbstick'e bas = modeli anında sıfırla<br>
   &bull; Tetik (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
   &bull; Grip (basılı tut) = modeli her eksende taşı<br>
-  &bull; A veya B (sol kumandada X veya Y) basılı tut = modelin yatay dönüşü yavaşça sıfırlanır<br>
+  &bull; A veya B (sol kumandada X veya Y) basılı tut = yatay dönüş (yön) korunur, diğer eksenler yavaşça ilk haline döner<br>
   <b>Elle (hand tracking, pinch = baş + işaret parmağı):</b><br>
   &bull; Sağ el pinch (basılı tut) = modeli fare gibi sürükleyerek çevir<br>
   &bull; Sol el pinch (basılı tut) = modeli taşı<br>
@@ -194,6 +194,7 @@ function yawAci(q) {
   if (Math.hypot(q.y, q.w) < 1e-4) return null;
   return 2 * Math.atan2(q.y, q.w);
 }
+const twistQ = new THREE.Quaternion(), homeTw = new THREE.Quaternion(), homeSw = new THREE.Quaternion(), hedefQ = new THREE.Quaternion();
 const aciA = { yaw: 0, pitch: 0 }, aciB = { yaw: 0, pitch: 0 };
 const acifark = (a, b) => THREE.MathUtils.euclideanModulo(a - b + Math.PI, 2 * Math.PI) - Math.PI;
 const homePos = new THREE.Vector3(), homeQ = new THREE.Quaternion();
@@ -443,10 +444,15 @@ renderer.setAnimationLoop((t, frame) => {
       if (basili && !btnPrev[src.handedness]) sifirla();
       btnPrev[src.handedness] = basili;
       const ab = (gp.buttons[4] && gp.buttons[4].pressed) || (gp.buttons[5] && gp.buttons[5].pressed);
-      if (ab) {                           // A veya B: yalnızca yatay dönüş (yaw) sıfırlanır
-        const cur = yawAci(pivot.quaternion), hedef = yawAci(homeQ);
-        if (cur !== null && hedef !== null)
-          pivot.rotateOnWorldAxis(YEKSEN, acifark(hedef, cur) * Math.min(1, 2.5 * dt));
+      if (ab) {                           // A veya B: yaw (yatay dönüş) korunur, diğer eksenler ilk haline döner
+        const q = pivot.quaternion;
+        if (Math.hypot(q.y, q.w) > 1e-4) {
+          twistQ.set(0, q.y, 0, q.w).normalize();                       // mevcut yaw
+          homeTw.set(0, homeQ.y, 0, homeQ.w).normalize();
+          homeSw.copy(homeTw).invert().multiply(homeQ);                  // ilk halin yaw dışındaki kısmı
+          hedefQ.copy(twistQ).multiply(homeSw);
+          q.slerp(hedefQ, Math.min(1, 2.5 * dt));
+        }
       }
     });
   } else {
